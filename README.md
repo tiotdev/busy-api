@@ -1,24 +1,32 @@
-# BUSY API
+# TravelFeed notifications
 
-The API server for [Busy](https://busy.org/) - Blockchain-based social network where anyone can earn rewards :rocket:.
+Websocket notification server for TravelFeed, forked from [busyorg/busy-api](https://github.com/busyorg/busy-api)
 
-## Development
+### Setting up with docker
 
-[Yarn](https://yarnpkg.com/) package manager is used for this project. To install yarn, use
-
-```shell
-$ npm i -g yarn
+```sh
+# install dependencies
+yarn
+# run redis form docker
+docker pull redis:4-alpine
+# create volume for persistent storage
+docker volume create snf
+docker run --name redis -p 6379:6379 -d -v snf:/data redis:4-alpine
+# set env var
+# unsecure required for localhost
+yarn start
 ```
 
-You may require `sudo`.
+### Using the WS server
 
-**Let's start development**
+get notifications
 
-But before that, you would need to have a [redis](https://redis.io/) server up and running.
-
-```shell
-$ yarn  # Install dependencies
-$ yarn start  # Start server
+```
+{"id":0,"jsonrpc":"2.0","method":"get_notifications","params":["jpphoto"]}
 ```
 
-You should be able to access the server at http://localhost:4000.
+### Testing WS
+
+The websocket server is available at `http://localhost:4000`
+
+For local testing, use [Smart Websocket Client](https://chrome.google.com/webstore/detail/smart-websocket-client/omalebghpgejjiaoknljcfmglgbpocdp/related?utm_source=chrome-app-launcher-info-dialog)
