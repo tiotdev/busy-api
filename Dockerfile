@@ -11,7 +11,7 @@ RUN yarn
 # Copying source files
 COPY . .
 
-EXPOSE 4000
+EXPOSE 5000
 
 # Running the app
 CMD [ "yarn", "start" ]
