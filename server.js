@@ -2,7 +2,6 @@ const _ = require('lodash');
 const express = require('express');
 const SocketServer = require('ws').Server;
 const { Client } = require('busyjs');
-const sdk = require('sc2-sdk');
 const bodyParser = require('body-parser');
 const redis = require('./helpers/redis');
 const utils = require('./helpers/utils');
@@ -11,8 +10,6 @@ const notificationUtils = require('./helpers/expoNotifications');
 
 const NOTIFICATION_EXPIRY = 5 * 24 * 3600;
 const LIMIT = 25;
-
-const sc2 = sdk.Initialize({ app: 'busy.app' });
 
 const app = express();
 app.use(bodyParser.json());
@@ -23,7 +20,7 @@ const server = app.listen(port, () => console.log(`Listening on ${port}`));
 
 const wss = new SocketServer({ server });
 
-const steemdWsUrl = process.env.STEEMD_WS_URL || 'wss://rpc.buildteam.io';
+const steemdWsUrl = process.env.STEEMD_WS_URL || 'https://anyx.io/';
 const client = new Client(steemdWsUrl);
 
 const cache = {};
@@ -65,28 +62,6 @@ wss.on('connection', ws => {
         });
       // } else if (useCache && cache[key]) {
       //  ws.send(JSON.stringify({ id: call.id, cache: true, result: cache[key] }));
-    } else if (call.method === 'login' && call.params && call.params[0]) {
-      sc2.setAccessToken(call.params[0]);
-      sc2
-        .me()
-        .then(result => {
-          console.log('Login success', result.name);
-          ws.name = result.name;
-          ws.verified = true;
-          ws.account = result.account;
-          ws.user_metadata = result.user_metadata;
-          ws.send(JSON.stringify({ id: call.id, result: { login: true, username: result.name } }));
-        })
-        .catch(err => {
-          console.error('Login failed', err);
-          ws.send(
-            JSON.stringify({
-              id: call.id,
-              result: {},
-              error: 'Something is wrong',
-            }),
-          );
-        });
     } else if (call.method === 'subscribe' && call.params && call.params[0]) {
       console.log('Subscribe success', call.params[0]);
       ws.name = call.params[0];
@@ -121,10 +96,16 @@ const getNotifications = ops => {
   ops.forEach(op => {
     const type = op.op[0];
     const params = op.op[1];
+    // Filter out non-TravelFeed posts
+    if (params.json_metadata) {
+      data = JSON.parse(params.json_metadata);
+      if (data && data['tags'] && data['tags'].indexOf('travelfeed') === -1) {
+        return;
+      }
+    }
     switch (type) {
       case 'comment': {
         const isRootPost = !params.parent_author;
-
         /** Find replies */
         if (!isRootPost) {
           const notification = {
@@ -141,19 +122,15 @@ const getNotifications = ops => {
         /** Find mentions */
         const pattern = /(@[a-z][-\.a-z\d]+[a-z\d])/gi;
         const content = `${params.title} ${params.body}`;
-        const mentions = _
-          .without(
-            _
-              .uniq(
-                (content.match(pattern) || [])
-                  .join('@')
-                  .toLowerCase()
-                  .split('@'),
-              )
-              .filter(n => n),
-            params.author,
-          )
-          .slice(0, 9); // Handle maximum 10 mentions per post
+        const mentions = _.without(
+          _.uniq(
+            (content.match(pattern) || [])
+              .join('@')
+              .toLowerCase()
+              .split('@'),
+          ).filter(n => n),
+          params.author,
+        ).slice(0, 9); // Handle maximum 10 mentions per post
         if (mentions.length) {
           mentions.forEach(mention => {
             const notification = {
@@ -194,64 +171,25 @@ const getNotifications = ops => {
               };
               notifications.push([json[1].following, notification]);
             }
-            /** Find reblog */
-            if (json[0] === 'reblog' && json[1].account && json[1].author && json[1].permlink) {
-              const notification = {
-                type: 'reblog',
-                account: json[1].account,
-                permlink: json[1].permlink,
-                timestamp: Date.parse(op.timestamp) / 1000,
-                block: op.block,
-              };
-              // console.log('Reblog', [json[1].author, JSON.stringify(notification)]);
-              notifications.push([json[1].author, notification]);
-            }
             break;
           }
         }
         break;
       }
-      case 'account_witness_vote': {
-        /** Find witness vote */
-        const notification = {
-          type: 'witness_vote',
-          account: params.account,
-          approve: params.approve,
-          timestamp: Date.parse(op.timestamp) / 1000,
-          block: op.block,
-        };
-        // console.log('Witness vote', [params.witness, notification]);
-        notifications.push([params.witness, notification]);
-        break;
-      }
       case 'vote': {
+        // Only notify on votes by @travelfeed
+        if (params.voter !== 'travelfeed') return;
         /** Find downvote */
-        if (params.weight < 0) {
-          const notification = {
-            type: 'vote',
-            voter: params.voter,
-            permlink: params.permlink,
-            weight: params.weight,
-            timestamp: Date.parse(op.timestamp) / 1000,
-            block: op.block,
-          };
-          // console.log('Downvote', JSON.stringify([params.author, notification]));
-          notifications.push([params.author, notification]);
-        }
-        break;
-      }
-      case 'transfer': {
-        /** Find transfer */
         const notification = {
-          type: 'transfer',
-          from: params.from,
-          amount: params.amount,
-          memo: params.memo,
+          type: 'vote',
+          voter: params.voter,
+          permlink: params.permlink,
+          weight: params.weight,
           timestamp: Date.parse(op.timestamp) / 1000,
           block: op.block,
         };
-        // console.log('Transfer', JSON.stringify([params.to, notification]));
-        notifications.push([params.to, notification]);
+        // console.log('Downvote', JSON.stringify([params.author, notification]));
+        notifications.push([params.author, notification]);
         break;
       }
     }
@@ -301,12 +239,8 @@ const loadBlock = blockNum => {
         /** Create redis operations array */
         const redisOps = [];
         notifications.forEach(notification => {
-          const key = `notifications:${notification[0]}`
-          redisOps.push([
-            'lpush',
-            key,
-            JSON.stringify(notification[1]),
-          ]);
+          const key = `notifications:${notification[0]}`;
+          redisOps.push(['lpush', key, JSON.stringify(notification[1])]);
           redisOps.push(['expire', key, NOTIFICATION_EXPIRY]);
           redisOps.push(['ltrim', key, 0, LIMIT - 1]);
         });
@@ -352,7 +286,7 @@ const loadNextBlock = () => {
   redis
     .getAsync('last_block_num')
     .then(res => {
-      let nextBlockNum = res === null ? 20000000 : parseInt(res) + 1;
+      let nextBlockNum = res === null ? 36916135 : parseInt(res) + 1;
       utils
         .getGlobalProps()
         .then(globalProps => {
